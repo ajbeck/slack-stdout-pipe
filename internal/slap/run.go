@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,22 +12,46 @@ import (
 	"time"
 )
 
+// commander executes a command, sends its output to the lines channel,
+// and returns the exit code. It must close lines when done.
+type commander interface {
+	Run(name string, args []string, lines chan<- Line) int
+}
+
+// Slap orchestrates command execution and Slack output streaming.
+type Slap struct {
+	poster     httpPoster
+	commander  commander
+	webhookURL string
+	version    string
+}
+
+// New returns a Slap configured with the real HTTP client and OS command
+// execution.
+func New(webhookURL, version string) *Slap {
+	return &Slap{
+		poster:     &http.Client{Timeout: 30 * time.Second},
+		commander:  execCommander{},
+		webhookURL: webhookURL,
+		version:    version,
+	}
+}
+
 // Run executes the named command with args, streaming output to both the
-// terminal and the Slack webhook at webhookURL. It returns the command's
-// exit code.
-func Run(webhookURL string, name string, args []string) int {
+// terminal and the Slack webhook. It returns the command's exit code.
+func (s *Slap) Run(name string, args []string) int {
 	lines := make(chan Line, 256)
-	sender := NewSender(webhookURL, lines)
+	sender := newSender(s.webhookURL, s.poster, lines)
 	go sender.Run()
 
 	cmdStr := name + " " + strings.Join(args, " ")
-	sender.SendMessage(fmt.Sprintf(":rocket: `%s` started", cmdStr))
+	sender.SendMessage(fmt.Sprintf(":rocket: `%s` started — slap %s", cmdStr, s.version))
 
 	start := time.Now()
-	exitCode := execute(name, args, lines)
+	exitCode := s.commander.Run(name, args, lines)
 	elapsed := time.Since(start)
 
-	// Channel closed by execute; wait for sender to drain.
+	// Channel closed by commander; wait for sender to drain.
 	sender.Wait()
 
 	emoji := ":white_check_mark:"
@@ -35,7 +60,7 @@ func Run(webhookURL string, name string, args []string) int {
 	}
 	// Send final status as a separate post after the sender has drained
 	// all output, so it appears last.
-	finalSender := NewSender(webhookURL, nil)
+	finalSender := newSender(s.webhookURL, s.poster, nil)
 	finalSender.SendMessage(fmt.Sprintf(
 		"%s `%s` exited %d in %s",
 		emoji, cmdStr, exitCode, elapsed.Round(time.Millisecond),
@@ -44,9 +69,10 @@ func Run(webhookURL string, name string, args []string) int {
 	return exitCode
 }
 
-// execute runs the command, tees output to the terminal, sends lines to
-// the channel, and returns the exit code. It closes lines when done.
-func execute(name string, args []string, lines chan<- Line) int {
+// execCommander runs OS commands via exec.Command.
+type execCommander struct{}
+
+func (execCommander) Run(name string, args []string, lines chan<- Line) int {
 	defer close(lines)
 
 	cmd := exec.Command(name, args...)
