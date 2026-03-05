@@ -31,8 +31,19 @@ type Slap struct {
 func New(webhookURL, version string) *Slap {
 	return &Slap{
 		poster:     &http.Client{Timeout: 30 * time.Second},
-		commander:  execCommander{},
+		commander:  execCommander{stdout: os.Stdout, stderr: os.Stderr},
 		webhookURL: webhookURL,
+		version:    version,
+	}
+}
+
+// NewDebug returns a Slap that logs what would be sent to Slack via slog
+// instead of making real HTTP requests. Command stdout/stderr is discarded.
+func NewDebug(version string) *Slap {
+	return &Slap{
+		poster:     newLogPoster(),
+		commander:  execCommander{stdout: io.Discard, stderr: io.Discard},
+		webhookURL: "debug",
 		version:    version,
 	}
 }
@@ -70,9 +81,12 @@ func (s *Slap) Run(name string, args []string) int {
 }
 
 // execCommander runs OS commands via exec.Command.
-type execCommander struct{}
+type execCommander struct {
+	stdout io.Writer
+	stderr io.Writer
+}
 
-func (execCommander) Run(name string, args []string, lines chan<- Line) int {
+func (c execCommander) Run(name string, args []string, lines chan<- Line) int {
 	defer close(lines)
 
 	cmd := exec.Command(name, args...)
@@ -96,8 +110,8 @@ func (execCommander) Run(name string, args []string, lines chan<- Line) int {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go scanPipe(&wg, stdoutPipe, os.Stdout, Stdout, lines)
-	go scanPipe(&wg, stderrPipe, os.Stderr, Stderr, lines)
+	go scanPipe(&wg, stdoutPipe, c.stdout, Stdout, lines)
+	go scanPipe(&wg, stderrPipe, c.stderr, Stderr, lines)
 	wg.Wait()
 
 	if err := cmd.Wait(); err != nil {
