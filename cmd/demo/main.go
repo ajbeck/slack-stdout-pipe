@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// Version is set at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 //go:embed sherlock.md
 var sherlockFS embed.FS
 

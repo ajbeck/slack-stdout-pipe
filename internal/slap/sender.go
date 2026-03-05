@@ -19,6 +19,12 @@ const (
 	defaultBackoff = 5 * time.Second
 )
 
+// httpPoster sends an HTTP POST request and returns the response.
+// *http.Client satisfies this interface.
+type httpPoster interface {
+	Post(url, contentType string, body io.Reader) (*http.Response, error)
+}
+
 // slackPayload is the JSON body sent to a Slack incoming webhook.
 type slackPayload struct {
 	Text string `json:"text"`
@@ -28,16 +34,16 @@ type slackPayload struct {
 // and POSTs formatted messages to a Slack webhook.
 type Sender struct {
 	webhookURL string
-	client     *http.Client
+	poster     httpPoster
 	lines      <-chan Line
 	done       chan struct{}
 }
 
-// NewSender creates a Sender that reads from lines and posts to webhookURL.
-func NewSender(webhookURL string, lines <-chan Line) *Sender {
+// newSender creates a Sender that reads from lines and posts to webhookURL.
+func newSender(webhookURL string, poster httpPoster, lines <-chan Line) *Sender {
 	return &Sender{
 		webhookURL: webhookURL,
-		client:     &http.Client{Timeout: 30 * time.Second},
+		poster:     poster,
 		lines:      lines,
 		done:       make(chan struct{}),
 	}
@@ -134,7 +140,7 @@ func (s *Sender) post(text string) {
 	}
 
 	for {
-		resp, err := s.client.Post(s.webhookURL, "application/json", bytes.NewReader(payload))
+		resp, err := s.poster.Post(s.webhookURL, "application/json", bytes.NewReader(payload))
 		if err != nil {
 			log.Printf("slap: webhook POST failed: %v", err)
 			return

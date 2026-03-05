@@ -9,6 +9,9 @@ import (
 	"github.com/ajbeck/slack-stdout-pipe/internal/slap"
 )
 
+// Version is set at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 func main() {
 	webhookURL := os.Getenv("SLAP_TARGET")
 	if webhookURL == "" {
@@ -24,6 +27,6 @@ func main() {
 	name := os.Args[1]
 	args := os.Args[2:]
 
-	exitCode := slap.Run(webhookURL, name, args)
-	os.Exit(exitCode)
+	s := slap.New(webhookURL, Version)
+	os.Exit(s.Run(name, args))
 }
