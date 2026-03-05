@@ -100,11 +100,36 @@ slap ./bin/demo 30s
 
 The demo accepts a single argument — the duration to run (e.g. `10s`, `1m`, `2m30s`).
 
+## Debug Mode
+
+Set `SLAP_BLOCK=bingo` to activate debug mode. This lets you test slap without a Slack webhook.
+
+**No command** — prints version info and ASCII art:
+
+```sh
+SLAP_BLOCK=bingo slap
+```
+
+**With a command** — runs the command but logs what would be sent to Slack via structured logging instead of making HTTP requests. The command's stdout and stderr are suppressed:
+
+```sh
+SLAP_BLOCK=bingo slap make test
+```
+
+Example output:
+
+```
+time=2026-03-05T12:30:00Z level=INFO msg="slack message" text=":rocket: `make test` started — slap 0.2.0"
+time=2026-03-05T12:30:01Z level=INFO msg="slack message" text="```\n[stdout] ok  \tpkg\t0.01s\n```"
+time=2026-03-05T12:30:01Z level=INFO msg="slack message" text=":white_check_mark: `make test` exited 0 in 1.2s"
+```
+
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
 | `SLAP_TARGET` | Yes | Slack incoming webhook URL. Removed from the child process environment so wrapped commands don't see it. |
+| `SLAP_BLOCK` | No | Set to `bingo` to enable debug mode. Logs Slack messages locally instead of posting. `SLAP_TARGET` is not required in debug mode. |
 
 ## Build Targets
 
