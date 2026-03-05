@@ -2,18 +2,23 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: "Version constraint (e.g., 0, 0.1, 0.1.0). Leave empty for HEAD."
+        required: false
+        type: string
 
 permissions:
   contents: write
   actions: read
 
 jobs:
-  prepare:
-    name: Prepare Release
+  find-commits:
+    name: Find Release Commit
     runs-on: ubuntu-latest
     outputs:
-      commit_sha: ${{ steps.prepare.outputs.commit_sha }}
-      version: ${{ steps.prepare.outputs.version }}
+      commit_sha: ${{ steps.find.outputs.commit_sha }}
+      version: ${{ steps.find.outputs.version }}
     steps:
       - name: Checkout
         # https://github.com/actions/checkout
@@ -22,33 +27,39 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Read version and validate
-        id: prepare
-        run: |
-          VERSION=$(cat VERSION)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "commit_sha=$GITHUB_SHA" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-          echo "Commit: $GITHUB_SHA"
+      - name: Setup Node.js
+        # https://github.com/actions/setup-node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
 
-          # Check that the tag doesn't already exist
-          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-            echo "Error: Tag v$VERSION already exists. Bump VERSION before releasing."
-            exit 1
-          fi
+      - name: Install dependencies
+        run: npm ci
+        working-directory: ./.github/scripts
+
+      - name: Find release commit
+        id: find
+        # https://github.com/actions/github-script
+        uses: actions/github-script@v8
+        env:
+          VERSION_CONSTRAINT: ${{ inputs.releaseVersion }}
+        with:
+          script: |
+            const { main } = require('./.github/scripts/find-release-commit');
+            return await main({ context, github, core });
 
   build:
     name: Build
-    needs: prepare
+    needs: find-commits
     uses: ./.github/workflows/build.yaml
     with:
       mode: release
-      ref: ${{ needs.prepare.outputs.commit_sha }}
+      ref: ${{ needs.find-commits.outputs.commit_sha }}
     secrets: inherit
 
   release:
     name: Create Release
-    needs: [prepare, build]
+    needs: [find-commits, build]
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
@@ -92,8 +103,8 @@ jobs:
         # https://github.com/actions/github-script
         uses: actions/github-script@v8
         env:
-          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
-          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT_SHA: ${{ needs.find-commits.outputs.commit_sha }}
+          VERSION: ${{ needs.find-commits.outputs.version }}
         with:
           script: |
             const fs = require('fs');
@@ -113,7 +124,6 @@ jobs:
             console.log(`Creating release for version: ${version}`);
             console.log(`Commit SHA: ${commitSha}`);
 
-            // Create/update tags: v0.1.0, v0.1, v0
             const tags = [
               { name: `v${major}.${minor}.${patch}`, movable: false },
               { name: `v${major}.${minor}`, movable: true },
@@ -208,8 +218,8 @@ jobs:
 
       - name: Write workflow summary
         env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          VERSION: ${{ needs.find-commits.outputs.version }}
+          COMMIT_SHA: ${{ needs.find-commits.outputs.commit_sha }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           RELEASE_URL: ${{ steps.release.outputs.release_url }}
           CREATED_TAGS: ${{ steps.release.outputs.created_tags }}
