@@ -11,6 +11,9 @@ bin/
 *.out
 vendor/
 
+# Node (GitHub scripts)
+node_modules/
+
 # Claude Code
 .claude/
 

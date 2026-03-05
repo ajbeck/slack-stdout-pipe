@@ -1,0 +1,11 @@
+{
+  "name": "slap-github-scripts",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test test.js"
+  },
+  "dependencies": {
+    "semver": "^7.7.3"
+  }
+}
