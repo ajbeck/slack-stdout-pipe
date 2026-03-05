@@ -1,0 +1,148 @@
+name: Pull Request
+on:
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      build_needed: ${{ steps.changes.outputs.build_needed }}
+      go_files: ${{ steps.changes.outputs.go_files }}
+      version: ${{ steps.changes.outputs.version }}
+      go_mod: ${{ steps.changes.outputs.go_mod }}
+      makefile: ${{ steps.changes.outputs.makefile }}
+      workflow: ${{ steps.changes.outputs.workflow }}
+      current_version: ${{ steps.changes.outputs.current_version }}
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for build-impacting changes
+        id: changes
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          echo ""
+
+          GO_FILES=$(echo "$CHANGED_FILES" | grep -E '\.go$' || true)
+          VERSION=$(echo "$CHANGED_FILES" | grep -E '^VERSION$' || true)
+          GO_MOD=$(echo "$CHANGED_FILES" | grep -E '^go\.(mod|sum)$' || true)
+          MAKEFILE=$(echo "$CHANGED_FILES" | grep -E '^Makefile$' || true)
+          WORKFLOW=$(echo "$CHANGED_FILES" | grep -E '^\.github/workflows/build\.yaml$' || true)
+
+          echo "go_files=$( [ -n "$GO_FILES" ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+          echo "version=$( [ -n "$VERSION" ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+          echo "go_mod=$( [ -n "$GO_MOD" ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+          echo "makefile=$( [ -n "$MAKEFILE" ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+          echo "workflow=$( [ -n "$WORKFLOW" ] && echo 'true' || echo 'false' )" >> $GITHUB_OUTPUT
+
+          CURRENT_VERSION=$(cat VERSION)
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
+
+          if [ -n "$GO_FILES" ] || [ -n "$VERSION" ] || [ -n "$GO_MOD" ] || [ -n "$MAKEFILE" ] || [ -n "$WORKFLOW" ]; then
+            echo "build_needed=true" >> $GITHUB_OUTPUT
+            echo "Build is needed"
+          else
+            echo "build_needed=false" >> $GITHUB_OUTPUT
+            echo "Build is NOT needed"
+          fi
+
+  build:
+    name: Build
+    needs: detect-changes
+    if: needs.detect-changes.outputs.build_needed == 'true'
+    uses: ./.github/workflows/build.yaml
+    secrets: inherit
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build]
+    if: always()
+    steps:
+      - name: Write workflow summary
+        env:
+          BUILD_NEEDED: ${{ needs.detect-changes.outputs.build_needed }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          GO_FILES: ${{ needs.detect-changes.outputs.go_files }}
+          VERSION_CHANGED: ${{ needs.detect-changes.outputs.version }}
+          GO_MOD: ${{ needs.detect-changes.outputs.go_mod }}
+          MAKEFILE: ${{ needs.detect-changes.outputs.makefile }}
+          WORKFLOW: ${{ needs.detect-changes.outputs.workflow }}
+          CURRENT_VERSION: ${{ needs.detect-changes.outputs.current_version }}
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## Pull Request Summary
+
+          ### Change Detection
+
+          | File Category | Changed | Pattern |
+          |---------------|---------|---------|
+          EOF
+
+          row() {
+            local name="$1"
+            local value="$2"
+            local desc="$3"
+            if [ "$value" == "true" ]; then
+              echo "| $name | :white_check_mark: Yes | $desc |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $name | :x: No | $desc |" >> $GITHUB_STEP_SUMMARY
+            fi
+          }
+
+          row "Go Files" "$GO_FILES" "\`**/*.go\`"
+          row "Version" "$VERSION_CHANGED" "\`VERSION\`"
+          row "Go Dependencies" "$GO_MOD" "\`go.mod\`, \`go.sum\`"
+          row "Makefile" "$MAKEFILE" "\`Makefile\`"
+          row "Build Workflow" "$WORKFLOW" "\`.github/workflows/build.yaml\`"
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$BUILD_NEEDED" == "true" ]; then
+            echo "### Build Triggered" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Build-impacting changes were detected." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+            case "$BUILD_RESULT" in
+              success)
+                echo "| Build | :white_check_mark: Success |" >> $GITHUB_STEP_SUMMARY
+                ;;
+              failure)
+                echo "| Build | :x: Failed |" >> $GITHUB_STEP_SUMMARY
+                ;;
+              cancelled)
+                echo "| Build | :warning: Cancelled |" >> $GITHUB_STEP_SUMMARY
+                ;;
+              skipped)
+                echo "| Build | :fast_forward: Skipped |" >> $GITHUB_STEP_SUMMARY
+                ;;
+              *)
+                echo "| Build | :question: $BUILD_RESULT |" >> $GITHUB_STEP_SUMMARY
+                ;;
+            esac
+          else
+            echo "### Build Skipped" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo ":fast_forward: **No build-impacting changes detected.**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Files that trigger a build:" >> $GITHUB_STEP_SUMMARY
+            echo "- Go source files (\`**/*.go\`)" >> $GITHUB_STEP_SUMMARY
+            echo "- Version file (\`VERSION\`)" >> $GITHUB_STEP_SUMMARY
+            echo "- Go dependencies (\`go.mod\`, \`go.sum\`)" >> $GITHUB_STEP_SUMMARY
+            echo "- Build configuration (\`Makefile\`)" >> $GITHUB_STEP_SUMMARY
+            echo "- Build workflow (\`.github/workflows/build.yaml\`)" >> $GITHUB_STEP_SUMMARY
+          fi

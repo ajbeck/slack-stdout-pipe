@@ -1,0 +1,180 @@
+name: Build
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to checkout (defaults to triggering ref)"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      mode:
+        description: "Build mode: 'pr' or 'release'"
+        type: string
+        default: "pr"
+      ref:
+        description: "Git ref to checkout (defaults to triggering ref)"
+        type: string
+        required: false
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    if: inputs.mode != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Setup Go
+        # https://github.com/actions/setup-go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Lint
+        run: make lint FMT_CHECK=true
+
+  test:
+    name: Test
+    if: inputs.mode != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Setup Go
+        # https://github.com/actions/setup-go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: make test
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [lint, test]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+            runner: macos-latest
+          - goos: darwin
+            goarch: arm64
+            runner: macos-latest
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Set build variables
+        id: vars
+        run: |
+          echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+          echo "sha_short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Setup Go
+        # https://github.com/actions/setup-go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        env:
+          BUILD_METADATA: gh:${{ github.run_id }}:${{ steps.vars.outputs.sha_short }}
+          RELEASE: "true"
+        run: make build-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Upload binaries
+        # https://github.com/actions/upload-artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            bin/slap-${{ matrix.goos }}-${{ matrix.goarch }}
+            bin/demo-${{ matrix.goos }}-${{ matrix.goarch }}
+          retention-days: 1
+
+  package:
+    name: Package
+    needs: [build, test]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Set build variables
+        id: vars
+        run: |
+          echo "version=$(cat VERSION)" >> $GITHUB_OUTPUT
+          echo "sha_short=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Download all binaries
+        # https://github.com/actions/download-artifact
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Prepare release artifact
+        run: |
+          tar -czf slap-${{ steps.vars.outputs.version }}+gh${{ github.run_id }}-${{ steps.vars.outputs.sha_short }}.tar.gz -C artifacts .
+
+      - name: Upload release artifact
+        # https://github.com/actions/upload-artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: slap-${{ steps.vars.outputs.version }}+gh${{ github.run_id }}-${{ steps.vars.outputs.sha_short }}
+          path: slap-${{ steps.vars.outputs.version }}+gh${{ github.run_id }}-${{ steps.vars.outputs.sha_short }}.tar.gz
+          retention-days: 30
+
+      - name: Write summary
+        run: |
+          FULL_VERSION="${{ steps.vars.outputs.version }}+gh:${{ github.run_id }}:${{ steps.vars.outputs.sha_short }}"
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Build Summary
+
+          | Item | Value |
+          |------|-------|
+          | Version | \`${FULL_VERSION}\` |
+          | Build Mode | Release (-s -w) |
+          | Platforms | darwin/amd64, darwin/arm64, linux/amd64, linux/arm64 |
+          | Binaries | slap, demo |
+          EOF
+
+      - name: Cleanup intermediate artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for artifact in binaries-darwin-amd64 binaries-darwin-arm64 binaries-linux-amd64 binaries-linux-arm64; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq ".artifacts[] | select(.name==\"$artifact\") | .id")" 2>/dev/null || true
+          done

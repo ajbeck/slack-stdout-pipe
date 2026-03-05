@@ -133,18 +133,18 @@ func isChapterHeading(s string) bool {
 // storyTitles is the set of known story titles in ALL CAPS form.
 // Using a known list avoids false positives on in-story centered text.
 var storyTitles = map[string]bool{
-	"A SCANDAL IN BOHEMIA":                    true,
-	"THE RED-HEADED LEAGUE":                   true,
-	"A CASE OF IDENTITY":                      true,
-	"THE BOSCOMBE VALLEY MYSTERY":             true,
-	"THE FIVE ORANGE PIPS":                    true,
-	"THE MAN WITH THE TWISTED LIP":            true,
-	"THE ADVENTURE OF THE BLUE CARBUNCLE":     true,
-	"THE ADVENTURE OF THE SPECKLED BAND":      true,
-	"THE ADVENTURE OF THE ENGINEER'S THUMB":   true,
-	"THE ADVENTURE OF THE NOBLE BACHELOR":     true,
-	"THE ADVENTURE OF THE BERYL CORONET":      true,
-	"THE ADVENTURE OF THE COPPER BEECHES":     true,
+	"A SCANDAL IN BOHEMIA":                  true,
+	"THE RED-HEADED LEAGUE":                 true,
+	"A CASE OF IDENTITY":                    true,
+	"THE BOSCOMBE VALLEY MYSTERY":           true,
+	"THE FIVE ORANGE PIPS":                  true,
+	"THE MAN WITH THE TWISTED LIP":          true,
+	"THE ADVENTURE OF THE BLUE CARBUNCLE":   true,
+	"THE ADVENTURE OF THE SPECKLED BAND":    true,
+	"THE ADVENTURE OF THE ENGINEER'S THUMB": true,
+	"THE ADVENTURE OF THE NOBLE BACHELOR":   true,
+	"THE ADVENTURE OF THE BERYL CORONET":    true,
+	"THE ADVENTURE OF THE COPPER BEECHES":   true,
 }
 
 func isStoryTitle(s string) bool {

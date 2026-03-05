@@ -15,7 +15,7 @@ import (
 const (
 	coalesceWindow = 500 * time.Millisecond
 	// Slack truncates text around 40k chars. Stay well under.
-	maxMessageLen = 38000
+	maxMessageLen  = 38000
 	defaultBackoff = 5 * time.Second
 )
 
