@@ -1,0 +1,254 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.prepare.outputs.commit_sha }}
+      version: ${{ steps.prepare.outputs.version }}
+    steps:
+      - name: Checkout
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read version and validate
+        id: prepare
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "commit_sha=$GITHUB_SHA" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+          echo "Commit: $GITHUB_SHA"
+
+          # Check that the tag doesn't already exist
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Error: Tag v$VERSION already exists. Bump VERSION before releasing."
+            exit 1
+          fi
+
+  build:
+    name: Build
+    needs: prepare
+    uses: ./.github/workflows/build.yaml
+    with:
+      mode: release
+      ref: ${{ needs.prepare.outputs.commit_sha }}
+    secrets: inherit
+
+  release:
+    name: Create Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        # https://github.com/actions/download-artifact
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          pattern: slap-*
+          merge-multiple: true
+
+      - name: Extract and create platform tarballs
+        id: binaries
+        run: |
+          cd artifacts
+
+          TARBALL=$(ls slap-*.tar.gz 2>/dev/null | head -1)
+          if [ -z "$TARBALL" ]; then
+            echo "Error: No tarball found in artifacts"
+            exit 1
+          fi
+
+          echo "Extracting tarball: $TARBALL"
+          tar -xzf "$TARBALL"
+
+          mkdir -p ../release
+
+          echo "Creating per-binary tarballs..."
+          for binary in slap-* demo-*; do
+            if [ -f "$binary" ] && [[ ! "$binary" =~ \.tar\.gz$ ]]; then
+              echo "  Creating: ${binary}.tar.gz"
+              tar -czf "../release/${binary}.tar.gz" "$binary"
+            fi
+          done
+
+          echo ""
+          echo "Release assets:"
+          ls -la ../release/
+
+      - name: Create tags and release
+        id: release
+        # https://github.com/actions/github-script
+        uses: actions/github-script@v8
+        env:
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const commitSha = process.env.COMMIT_SHA;
+            const version = process.env.VERSION;
+
+            const match = version.match(/^(\d+)\.(\d+)\.(\d+)(-[a-zA-Z0-9.-]+)?$/);
+            if (!match) {
+              core.setFailed(`Invalid version format: ${version}`);
+              return;
+            }
+            const [, major, minor, patch, prerelease] = match;
+            const isPrerelease = !!prerelease;
+
+            console.log(`Creating release for version: ${version}`);
+            console.log(`Commit SHA: ${commitSha}`);
+
+            // Create/update tags: v0.1.0, v0.1, v0
+            const tags = [
+              { name: `v${major}.${minor}.${patch}`, movable: false },
+              { name: `v${major}.${minor}`, movable: true },
+              { name: `v${major}`, movable: true }
+            ];
+
+            const createdTags = [];
+            const updatedTags = [];
+
+            for (const tag of tags) {
+              const ref = `tags/${tag.name}`;
+              const fullRef = `refs/${ref}`;
+
+              try {
+                await github.rest.git.getRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: ref
+                });
+
+                if (tag.movable) {
+                  await github.rest.git.updateRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: ref,
+                    sha: commitSha,
+                    force: true
+                  });
+                  console.log(`Updated tag: ${tag.name} -> ${commitSha}`);
+                  updatedTags.push(tag.name);
+                } else {
+                  core.setFailed(`Tag ${tag.name} already exists. Cannot re-release the same version.`);
+                  return;
+                }
+              } catch (error) {
+                if (error.status === 404) {
+                  await github.rest.git.createRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: fullRef,
+                    sha: commitSha
+                  });
+                  console.log(`Created tag: ${tag.name} -> ${commitSha}`);
+                  createdTags.push(tag.name);
+                } else {
+                  throw error;
+                }
+              }
+            }
+
+            const releaseTag = `v${major}.${minor}.${patch}`;
+
+            console.log(`Creating GitHub release: ${releaseTag}`);
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: releaseTag,
+              name: `slap ${releaseTag}`,
+              generate_release_notes: true,
+              draft: false,
+              prerelease: isPrerelease
+            });
+
+            console.log(`Release created: ${release.html_url}`);
+
+            const releaseDir = './release';
+            const files = fs.readdirSync(releaseDir).filter(f => f.endsWith('.tar.gz'));
+
+            console.log(`Uploading ${files.length} assets...`);
+
+            for (const file of files) {
+              const filePath = path.join(releaseDir, file);
+              const fileData = fs.readFileSync(filePath);
+
+              console.log(`  Uploading: ${file} (${fileData.length} bytes)`);
+
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.id,
+                name: file,
+                data: fileData
+              });
+            }
+
+            console.log('All assets uploaded successfully');
+
+            core.setOutput('release_url', release.html_url);
+            core.setOutput('release_tag', releaseTag);
+            core.setOutput('created_tags', createdTags.join(','));
+            core.setOutput('updated_tags', updatedTags.join(','));
+
+      - name: Write workflow summary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          RELEASE_URL: ${{ steps.release.outputs.release_url }}
+          CREATED_TAGS: ${{ steps.release.outputs.created_tags }}
+          UPDATED_TAGS: ${{ steps.release.outputs.updated_tags }}
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## Release Summary
+
+          | Item | Value |
+          |------|-------|
+          | Version | \`${VERSION}\` |
+          | Release Tag | [\`${RELEASE_TAG}\`](${RELEASE_URL}) |
+          | Source Commit | [\`${COMMIT_SHA:0:7}\`](https://github.com/${{ github.repository }}/commit/${COMMIT_SHA}) |
+
+          ### Tags
+
+          EOF
+
+          if [ -n "${CREATED_TAGS}" ]; then
+            echo "**Created:** \`${CREATED_TAGS//,/\`, \`}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -n "${UPDATED_TAGS}" ]; then
+            echo "**Updated:** \`${UPDATED_TAGS//,/\`, \`}\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+
+          ### Assets
+
+          **Binaries:**
+
+          - \`slap-darwin-amd64.tar.gz\` (macOS Intel)
+          - \`slap-darwin-arm64.tar.gz\` (macOS Apple Silicon)
+          - \`slap-linux-amd64.tar.gz\` (Linux x64)
+          - \`slap-linux-arm64.tar.gz\` (Linux ARM64)
+          - \`demo-darwin-amd64.tar.gz\` (macOS Intel)
+          - \`demo-darwin-arm64.tar.gz\` (macOS Apple Silicon)
+          - \`demo-linux-amd64.tar.gz\` (Linux x64)
+          - \`demo-linux-arm64.tar.gz\` (Linux ARM64)
+
+          EOF
