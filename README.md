@@ -20,6 +20,22 @@ For full details see the [Slack incoming webhooks documentation](https://docs.sl
 
 ## Install
 
+Download a prebuilt binary from the [latest release](https://github.com/ajbeck/slack-stdout-pipe/releases/latest):
+
+| Platform | Asset |
+|---|---|
+| macOS Apple Silicon | `slap-darwin-arm64.tar.gz` |
+| macOS Intel | `slap-darwin-amd64.tar.gz` |
+| Linux x64 | `slap-linux-amd64.tar.gz` |
+| Linux ARM64 | `slap-linux-arm64.tar.gz` |
+
+```sh
+tar -xzf slap-<os>-<arch>.tar.gz
+mv slap-<os>-<arch> /usr/local/bin/slap
+```
+
+Or install with `go install`:
+
 ```sh
 go install github.com/ajbeck/slack-stdout-pipe/cmd/slap@latest
 ```
@@ -29,7 +45,7 @@ Or build from source:
 ```sh
 git clone https://github.com/ajbeck/slack-stdout-pipe.git
 cd slack-stdout-pipe
-make slap
+make build-slap
 # binary is at ./bin/slap
 ```
 
@@ -50,7 +66,7 @@ The wrapped command's exit code is preserved — `slap` exits with whatever the 
 ### What appears in Slack
 
 **Start message:**
-> :rocket: \`ls -la /tmp\` started
+> :rocket: \`ls -la /tmp\` started — slap 0.1.0+local:2025-03-05T12:00:00Z
 
 **Streamed output** (batched every 500ms):
 ```
@@ -72,7 +88,7 @@ A sample app is included that outputs lines from *The Adventures of Sherlock Hol
 Build it:
 
 ```sh
-make demo
+make build-demo
 ```
 
 Run it through `slap` for 30 seconds:
@@ -93,10 +109,11 @@ The demo accepts a single argument — the duration to run (e.g. `10s`, `1m`, `2
 ## Build Targets
 
 ```sh
-make          # build slap and demo into ./bin/
-make slap     # build just slap
-make demo     # build just demo
-make vet      # run go vet
-make test     # run go test
-make clean    # remove ./bin/ and clear go build cache
+make              # build slap and demo into ./bin/
+make build-slap   # build just slap
+make build-demo   # build just demo
+make test         # run tests
+make vet          # run go vet
+make lint         # run fmt and vet
+make clean        # remove ./bin/ and clear test cache
 ```
